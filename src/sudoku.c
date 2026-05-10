@@ -1,8 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #define SIZE 9
+#define EMPTY 0
+#define ALL_BITS 0x3FE  /* bits 1-9 set: 0b1111111110 */
 
 typedef int Board[SIZE][SIZE];
 
@@ -10,51 +13,76 @@ static int row_mask[SIZE];
 static int col_mask[SIZE];
 static int box_mask[SIZE];
 
-static inline int box_index(int r, int c) {
+/* board 参数用于 find_mrv 判断空格，mask 只用于约束传播 */
+static inline int box_of(int r, int c) {
     return (r / 3) * 3 + (c / 3);
 }
 
 static void init_masks(Board board) {
     for (int i = 0; i < SIZE; i++) {
-        row_mask[i] = 0;
-        col_mask[i] = 0;
-        box_mask[i] = 0;
+        row_mask[i] = col_mask[i] = box_mask[i] = 0;
     }
     for (int r = 0; r < SIZE; r++) {
         for (int c = 0; c < SIZE; c++) {
             int v = board[r][c];
-            if (v != 0) {
+            if (v != EMPTY) {
                 row_mask[r] |= 1 << v;
                 col_mask[c] |= 1 << v;
-                box_mask[box_index(r, c)] |= 1 << v;
+                box_mask[box_of(r, c)] |= 1 << v;
             }
         }
     }
 }
 
-static int solve_recursive(Board board, int pos) {
-    if (pos == SIZE * SIZE) return 1;
+/* 返回 (r,c) 处可选候选数的位掩码 */
+static inline int candidates(int r, int c) {
+    return ~(row_mask[r] | col_mask[c] | box_mask[box_of(r, c)]) & ALL_BITS;
+}
 
-    int r = pos / SIZE;
-    int c = pos % SIZE;
+/* MRV: 找候选数最少的空格 */
+static int find_mrv(Board board, int *br, int *bc, int *bbits) {
+    int min_cnt = INT_MAX;
+    int found = 0;
 
-    if (board[r][c] != 0) return solve_recursive(board, pos + 1);
+    for (int r = 0; r < SIZE; r++) {
+        for (int c = 0; c < SIZE; c++) {
+            if (board[r][c] != EMPTY) continue;  /* 跳过已填格子 */
 
-    int b = box_index(r, c);
-    int used = row_mask[r] | col_mask[c] | box_mask[b];
+            int bits = candidates(r, c);
+            int cnt = __builtin_popcount(bits);
+            if (cnt == 0) return -1;   /* 死路 */
+            if (cnt < min_cnt) {
+                min_cnt = cnt;
+                *br = r; *bc = c; *bbits = bits;
+                found = 1;
+            }
+        }
+    }
+    return found ? 0 : 1;  /* 0=继续搜索, 1=全部填完 */
+}
 
-    for (int n = 1; n <= SIZE; n++) {
+static int solve_recursive(Board board) {
+    int r, c, bits;
+
+    int st = find_mrv(board, &r, &c, &bits);
+    if (st == 1) return 1;   /* 所有格子已填满 */
+    if (st == -1) return 0;  /* 死路 */
+
+    int b = box_of(r, c);
+
+    while (bits) {
+        int n = __builtin_ctz(bits);   /* 最低位的 1 对应候选数字 n */
+        bits &= bits - 1;              /* 清除该位 */
         int bit = 1 << n;
-        if (used & bit) continue;
 
         board[r][c] = n;
         row_mask[r] |= bit;
         col_mask[c] |= bit;
         box_mask[b] |= bit;
 
-        if (solve_recursive(board, pos + 1)) return 1;
+        if (solve_recursive(board)) return 1;
 
-        board[r][c] = 0;
+        board[r][c] = EMPTY;
         row_mask[r] &= ~bit;
         col_mask[c] &= ~bit;
         box_mask[b] &= ~bit;
@@ -65,7 +93,7 @@ static int solve_recursive(Board board, int pos) {
 
 static int solve(Board board) {
     init_masks(board);
-    return solve_recursive(board, 0);
+    return solve_recursive(board);
 }
 
 static void print_board(Board board) {
@@ -84,7 +112,7 @@ static int parse_81(const char *s, Board board) {
     for (int i = 0; i < 81; i++) {
         char ch = s[i];
         if (ch == '.' || ch == '_' || ch == '0' || ch == '*') {
-            board[i / SIZE][i % SIZE] = 0;
+            board[i / SIZE][i % SIZE] = EMPTY;
         } else if (ch >= '1' && ch <= '9') {
             board[i / SIZE][i % SIZE] = ch - '0';
         } else {
@@ -105,7 +133,7 @@ static int parse_lines(Board board) {
             if (ch >= '1' && ch <= '9') {
                 board[row][col++] = ch - '0';
             } else if (ch == '.' || ch == '0' || ch == '*' || ch == '-' || ch == '_') {
-                board[row][col++] = 0;
+                board[row][col++] = EMPTY;
             }
         }
         if (col == SIZE) row++;
@@ -114,7 +142,6 @@ static int parse_lines(Board board) {
             return -1;
         }
     }
-
     if (row != SIZE) {
         fprintf(stderr, "Error: need exactly 9 rows, got %d\n", row);
         return -1;
@@ -132,8 +159,6 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Usage:\n");
             fprintf(stderr, "  %s <81-char string>\n", argv[0]);
             fprintf(stderr, "  %s (then enter 9 lines)\n", argv[0]);
-            fprintf(stderr, "\n81-char: digits 1-9 and . for empty, e.g.:\n");
-            fprintf(stderr, "  530070000600195000098000060800060003400803001700020006060000280000419005000080079\n");
             return 1;
         }
     } else {
